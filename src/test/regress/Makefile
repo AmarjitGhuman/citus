@@ -161,14 +161,6 @@ check-follower-cluster: all
 	$(pg_regress_multi_check) --load-extension=citus --follower-cluster \
 	-- $(MULTI_REGRESS_OPTS) --schedule=$(citus_abs_srcdir)/multi_follower_schedule $(EXTRA_TESTS)
 
-check-failure: all
-	$(pg_regress_multi_check) --load-extension=citus --mitmproxy \
-	-- $(MULTI_REGRESS_OPTS) --schedule=$(citus_abs_srcdir)/failure_schedule $(EXTRA_TESTS)
-
-check-failure-base: all
-	$(pg_regress_multi_check) --load-extension=citus --mitmproxy \
-	-- $(MULTI_REGRESS_OPTS) --schedule=$(citus_abs_srcdir)/failure_base_schedule $(EXTRA_TESTS)
-
 COLUMNAR_SCHEDULES =
 COLUMNAR_ISOLATION_SCHEDULES =
 ifeq ($(USE_FDW),yes)
@@ -184,10 +176,17 @@ check-columnar:
 	$(pg_regress_multi_check) --load-extension=citus \
 	-- $(MULTI_REGRESS_OPTS) $(addprefix --schedule=$(citus_abs_srcdir)/,$(COLUMNAR_SCHEDULES)) $(EXTRA_TESTS)
 
-
 check-columnar-isolation: all  $(isolation_test_files)
 	$(pg_regress_multi_check) --load-extension=citus --isolationtester \
 	-- $(MULTI_REGRESS_OPTS) --inputdir=$(citus_abs_srcdir)/build $(addprefix --schedule=$(citus_abs_srcdir)/,$(COLUMNAR_ISOLATION_SCHEDULES)) $(EXTRA_TESTS)
+
+check-failure: all
+	$(pg_regress_multi_check) --load-extension=citus --mitmproxy \
+	-- $(MULTI_REGRESS_OPTS) --schedule=$(citus_abs_srcdir)/failure_schedule $(EXTRA_TESTS)
+
+check-failure-base: all
+	$(pg_regress_multi_check) --load-extension=citus --mitmproxy \
+	-- $(MULTI_REGRESS_OPTS) --schedule=$(citus_abs_srcdir)/failure_base_schedule $(EXTRA_TESTS)
 
 check-pg-upgrade:
 	$(pg_upgrade_check) --old-bindir=$(old-bindir) --new-bindir=$(new-bindir) --pgxsdir=$(pgxsdir)

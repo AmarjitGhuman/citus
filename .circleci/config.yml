@@ -199,18 +199,6 @@ jobs:
           flags: 'test_11,follower-cluster'
       - store_artifacts:
           path: '/tmp/core_dumps'
-  test-11_check-failure:
-    docker:
-      - image: 'citus/failtester:11.9'
-    working_directory: /home/circleci/project
-    steps:
-      - checkout
-      - attach_workspace:
-          at: .
-      - run:
-          name: 'Install and Test (check-failure)'
-          command: 'chown -R circleci:circleci /home/circleci && install-and-test-ext check-failure'
-          no_output_timeout: 2m
 
   test-11_check-columnar:
     docker:
@@ -241,6 +229,19 @@ jobs:
           no_output_timeout: 2m
       - codecov/upload:
           flags: 'test_11,columnar,isolation'
+
+  test-11_check-failure:
+    docker:
+      - image: 'citus/failtester:11.9'
+    working_directory: /home/circleci/project
+    steps:
+      - checkout
+      - attach_workspace:
+          at: .
+      - run:
+          name: 'Install and Test (check-failure)'
+          command: 'chown -R circleci:circleci /home/circleci && install-and-test-ext check-failure'
+          no_output_timeout: 2m
 
   test-11-12_check-pg-upgrade:
     docker:
@@ -367,19 +368,6 @@ jobs:
       - store_artifacts:
           path: '/tmp/core_dumps'
 
-  test-12_check-failure:
-    docker:
-      - image: 'citus/failtester:12.4'
-    working_directory: /home/circleci/project
-    steps:
-      - checkout
-      - attach_workspace:
-          at: .
-      - run:
-          name: 'Install and Test (check-failure)'
-          command: 'chown -R circleci:circleci /home/circleci && install-and-test-ext check-failure'
-          no_output_timeout: 2m
-
   test-12_check-columnar:
     docker:
       - image: 'citus/exttester:12.4'
@@ -409,6 +397,19 @@ jobs:
           no_output_timeout: 2m
       - codecov/upload:
           flags: 'test_12,columnar,isolation'
+
+  test-12_check-failure:
+    docker:
+      - image: 'citus/failtester:12.4'
+    working_directory: /home/circleci/project
+    steps:
+      - checkout
+      - attach_workspace:
+          at: .
+      - run:
+          name: 'Install and Test (check-failure)'
+          command: 'chown -R circleci:circleci /home/circleci && install-and-test-ext check-failure'
+          no_output_timeout: 2m
 
   test-11_check-citus-upgrade:
     docker:
@@ -533,19 +534,6 @@ jobs:
       - store_artifacts:
           path: '/tmp/core_dumps'
 
-  test-13_check-failure:
-    docker:
-      - image: 'citus/failtester:13.0'
-    working_directory: /home/circleci/project
-    steps:
-      - checkout
-      - attach_workspace:
-          at: .
-      - run:
-          name: 'Install and Test (check-failure)'
-          command: 'chown -R circleci:circleci /home/circleci && install-and-test-ext check-failure'
-          no_output_timeout: 2m
-
   test-13_check-columnar:
     docker:
       - image: 'citus/exttester:13.0'
@@ -575,6 +563,19 @@ jobs:
           no_output_timeout: 2m
       - codecov/upload:
           flags: 'test_13,columnar,isolation'
+
+  test-13_check-failure:
+    docker:
+      - image: 'citus/failtester:13.0'
+    working_directory: /home/circleci/project
+    steps:
+      - checkout
+      - attach_workspace:
+          at: .
+      - run:
+          name: 'Install and Test (check-failure)'
+          command: 'chown -R circleci:circleci /home/circleci && install-and-test-ext check-failure'
+          no_output_timeout: 2m
 
   check-merge-to-enterprise:
     docker:
@@ -646,11 +647,11 @@ workflows:
           requires: [build-11]
       - test-11_check-follower-cluster:
           requires: [build-11]
-      - test-11_check-failure:
-          requires: [build-11]
       - test-11_check-columnar:
           requires: [build-11]
       - test-11_check-columnar-isolation:
+          requires: [build-11]
+      - test-11_check-failure:
           requires: [build-11]
 
       - test-12_check-multi:
@@ -665,11 +666,11 @@ workflows:
           requires: [build-12]
       - test-12_check-follower-cluster:
           requires: [build-12]
-      - test-12_check-failure:
-          requires: [build-12]
       - test-12_check-columnar:
           requires: [build-12]
       - test-12_check-columnar-isolation:
+          requires: [build-12]
+      - test-12_check-failure:
           requires: [build-12]
 
       - test-13_check-multi:
@@ -684,11 +685,11 @@ workflows:
           requires: [build-13]
       - test-13_check-follower-cluster:
           requires: [build-13]
-      - test-13_check-failure:
-          requires: [build-13]
       - test-13_check-columnar:
           requires: [build-13]
       - test-13_check-columnar-isolation:
+          requires: [build-13]
+      - test-13_check-failure:
           requires: [build-13]
 
       - test-11-12_check-pg-upgrade:
