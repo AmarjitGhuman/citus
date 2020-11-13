@@ -619,6 +619,16 @@ static bool StartPlacementExecutionOnSession(TaskPlacementExecution *placementEx
 static bool SendNextQuery(TaskPlacementExecution *placementExecution,
 						  WorkerSession *session);
 static void ConnectionStateMachine(WorkerSession *session);
+static bool CouldAssignTasksToLocalExecution(WorkerPool *workerPool);
+static bool WorkerPoolToLocalNode(WorkerPool *workerPool);
+static bool PoolHasSessionWithAssignedTask(WorkerPool *workerPool);
+static void ConvertRemoteTasksToLocalTasks(WorkerPool *workerPool);
+static List * WorkerPoolTaskList(WorkerPool *workerPool);
+static Task * TaskPlacementExecutionGetTask(TaskPlacementExecution *
+											taskPlacementExecution);
+static void ExcludeAllSessionsFromExecution(WorkerPool *workerPool);
+static void ExcludeConnectionFromExecution(DistributedExecution *execution,
+										   MultiConnection *connection);
 static void HandleMultiConnectionSuccess(WorkerSession *session);
 static bool HasAnyConnectionFailure(WorkerPool *workerPool);
 static void Activate2PCIfModifyingTransactionExpandsToNewNode(WorkerSession *session);
@@ -1626,6 +1636,7 @@ CleanUpSessions(DistributedExecution *execution)
 
 		if (connection->connectionState == MULTI_CONNECTION_CONNECTING ||
 			connection->connectionState == MULTI_CONNECTION_FAILED ||
+			connection->connectionState == MULTI_CONNECTION_ESTABLISHMENT_FAILED ||
 			connection->connectionState == MULTI_CONNECTION_LOST ||
 			connection->connectionState == MULTI_CONNECTION_TIMED_OUT)
 		{
@@ -2851,7 +2862,7 @@ ConnectionStateMachine(WorkerSession *session)
 				 * new pools/sessions instead. That's why we terminate the
 				 * connection, clear any state associated with it.
 				 */
-				connection->connectionState = MULTI_CONNECTION_FAILED;
+				connection->connectionState = MULTI_CONNECTION_ESTABLISHMENT_FAILED;
 				break;
 			}
 
@@ -2869,7 +2880,7 @@ ConnectionStateMachine(WorkerSession *session)
 				}
 				else if (status == CONNECTION_BAD)
 				{
-					connection->connectionState = MULTI_CONNECTION_FAILED;
+					connection->connectionState = MULTI_CONNECTION_ESTABLISHMENT_FAILED;
 					break;
 				}
 
@@ -2884,7 +2895,7 @@ ConnectionStateMachine(WorkerSession *session)
 
 				if (pollMode == PGRES_POLLING_FAILED)
 				{
-					connection->connectionState = MULTI_CONNECTION_FAILED;
+					connection->connectionState = MULTI_CONNECTION_ESTABLISHMENT_FAILED;
 				}
 				else if (pollMode == PGRES_POLLING_READING)
 				{
@@ -2919,6 +2930,33 @@ ConnectionStateMachine(WorkerSession *session)
 			{
 				/* connection is ready, run the transaction state machine */
 				TransactionStateMachine(session);
+				break;
+			}
+
+			case MULTI_CONNECTION_ESTABLISHMENT_FAILED:
+			{
+				if (CouldAssignTasksToLocalExecution(workerPool))
+				{
+					/* move remote tasks to local execution as we failed to connect */
+					ConvertRemoteTasksToLocalTasks(workerPool);
+
+					ExcludeAllSessionsFromExecution(workerPool);
+
+					/* we do not want more connections in this pool */
+					workerPool->readyTaskCount = 0;
+					workerPool->failed = true;
+
+					return;
+				}
+				else
+				{
+					/*
+					 * We cannot assign tasks locally, follow the common
+					 * connection failure path.
+					 */
+					connection->connectionState = MULTI_CONNECTION_FAILED;
+				}
+
 				break;
 			}
 
@@ -2982,30 +3020,10 @@ ConnectionStateMachine(WorkerSession *session)
 				UnclaimConnection(connection);
 
 				/*
-				 * We forcefully close the underlying libpq connection because
-				 * we don't want any subsequent execution (either subPlan executions
-				 * or new command executions within a transaction block) use the
-				 * connection.
-				 *
-				 * However, we prefer to keep the MultiConnection around until
-				 * the end of FinishDistributedExecution() to simplify the code.
-				 * Thus, we prefer ShutdownConnection() over CloseConnection().
+				 * Shutdown the PQconnection, but keep the MultiConnection until
+				 * the end of the execution.
 				 */
-				ShutdownConnection(connection);
-
-				/* remove connection from wait event set */
-				execution->rebuildWaitEventSet = true;
-
-				/*
-				 * Reset the transaction state machine since CloseConnection()
-				 * relies on it and even if we're not inside a distributed transaction
-				 * we set the transaction state (e.g., REMOTE_TRANS_SENT_COMMAND).
-				 */
-				if (!connection->remoteTransaction.beginSent)
-				{
-					connection->remoteTransaction.transactionState =
-						REMOTE_TRANS_NOT_STARTED;
-				}
+				ExcludeConnectionFromExecution(execution, connection);
 
 				break;
 			}
@@ -3016,6 +3034,272 @@ ConnectionStateMachine(WorkerSession *session)
 			}
 		}
 	} while (connection->connectionState != currentState);
+}
+
+
+/*
+ * CouldAssignTasksToLocalExecution returns true if it is safe to move the tasks
+ * assigned to this pool to local execution.
+ */
+static bool
+CouldAssignTasksToLocalExecution(WorkerPool *workerPool)
+{
+	if (!EnableLocalExecution)
+	{
+		/* the user explicitly disabled local execution */
+		return false;
+	}
+
+	if (GetCurrentLocalExecutionStatus() == LOCAL_EXECUTION_DISABLED)
+	{
+		/*
+		 * If the current transaction accessed the local node over a connection
+		 * then we can't use local execution because of visibility issues.
+		 */
+		return false;
+	}
+
+	if (workerPool->activeConnectionCount > 0)
+	{
+		/*
+		 * The pool has already active connections, the executor is capable
+		 * of using those active connections.
+		 */
+		return false;
+	}
+
+	if (!WorkerPoolToLocalNode(workerPool))
+	{
+		/*
+		 * We can only assign tasks to local execution if the pool
+		 * targets the local node.
+		 */
+		return false;
+	}
+
+	if (PoolHasSessionWithAssignedTask(workerPool))
+	{
+		/*
+		 * If a task is assigned to a session, we have to use the same session.
+		 * Otherwise, we could break visibility rules.
+		 */
+		return false;
+	}
+
+	return true;
+}
+
+
+/*
+ * WorkerPoolToLocalNode returns true if the input pool is targeting
+ * the local node.
+ */
+static bool
+WorkerPoolToLocalNode(WorkerPool *workerPool)
+{
+	WorkerNode *workerNode = FindWorkerNode(workerPool->nodeName, workerPool->nodePort);
+
+	return workerNode->groupId == GetLocalGroupId();
+}
+
+
+/*
+ * PoolHasSessionWithAssignedTask returns true if the input workerPool has any
+ * sessions with assigned tasks.
+ */
+static bool
+PoolHasSessionWithAssignedTask(WorkerPool *workerPool)
+{
+	WorkerSession *session = NULL;
+	foreach_ptr(session, workerPool->sessionList)
+	{
+		TaskPlacementExecution *placementExecution = session->currentTask;
+		Task *task = TaskPlacementExecutionGetTask(placementExecution);
+		if (task != NULL)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+
+/*
+ * ConvertRemoteTasksToLocalTasks gets a worker pool and assigns all the tasks
+ * of the pool to the local execution.
+ */
+static void
+ConvertRemoteTasksToLocalTasks(WorkerPool *workerPool)
+{
+	/*
+	 * This is unexpected, if the localTaskList has any entries, the workerPool
+	 * should not have existed in the first place. Still, error message is better
+	 * than asserts.
+	 */
+	DistributedExecution *execution = workerPool->distributedExecution;
+	if (execution->localTaskList != NIL)
+	{
+		ereport(ERROR, (errmsg("cannot convert remote execution to "
+							   "local execution because local "
+							   "placement list has already items")));
+	}
+
+	/*
+	 * This is unexpected, if the poolTaskList does not have any entries, the
+	 * workerPool should not have existed in the first place. Still, error
+	 * message is better than asserts.
+	 */
+	List *poolTaskList = WorkerPoolTaskList(workerPool);
+	if (poolTaskList != NIL)
+	{
+		ereport(ERROR, (errmsg("cannot convert remote execution to "
+							   "local execution because local "
+							   "placement list has already items")));
+	}
+
+	/* assign all the tasks of the pool to the local execution */
+	execution->localTaskList = poolTaskList;
+
+	/* remove these tasks from remote execution */
+	execution->tasksToExecute =
+		list_difference_ptr(execution->tasksToExecute, poolTaskList);
+
+	/* adjust the global counters */
+	execution->totalTaskCount = list_length(execution->tasksToExecute);
+	execution->unfinishedTaskCount = list_length(execution->tasksToExecute);
+}
+
+
+/*
+ * WorkerPoolTaskList returns all the tasks assigned to the pool and returns them
+ * with a list.
+ */
+static List *
+WorkerPoolTaskList(WorkerPool *workerPool)
+{
+	List *taskList = NIL;
+	dlist_iter iter;
+
+	dlist_foreach(iter, &workerPool->pendingTaskQueue)
+	{
+		TaskPlacementExecution *placementExecution =
+			dlist_container(TaskPlacementExecution, workerPendingQueueNode, iter.cur);
+
+		Task *task = TaskPlacementExecutionGetTask(placementExecution);
+		if (task != NULL)
+		{
+			taskList = lappend(taskList, task);
+		}
+	}
+
+	dlist_foreach(iter, &workerPool->readyTaskQueue)
+	{
+		TaskPlacementExecution *placementExecution =
+			dlist_container(TaskPlacementExecution, workerReadyQueueNode, iter.cur);
+
+		Task *task = TaskPlacementExecutionGetTask(placementExecution);
+		if (task != NULL)
+		{
+			taskList = lappend(taskList, task);
+		}
+	}
+
+	return taskList;
+}
+
+
+/*
+ * TaskPlacementExecutionGetTask gets a TaskPlacementExecution and returns
+ * the Task. If the TaskPlacementExecution doesn't have a Task set, the function
+ * returns NULL.
+ */
+static Task *
+TaskPlacementExecutionGetTask(TaskPlacementExecution *taskPlacementExecution)
+{
+	ShardCommandExecution *shardCommandExecution = NULL;
+	Task *task = NULL;
+
+	if (taskPlacementExecution != NULL)
+	{
+		shardCommandExecution = taskPlacementExecution->shardCommandExecution;
+		if (shardCommandExecution != NULL)
+		{
+			task = shardCommandExecution->task;
+		}
+	}
+
+	return task;
+}
+
+
+/*
+ * ExcludeAllSessionsFromExecution excludes all the sessions of the input
+ * workerPool from the distributed execution.
+ */
+static void
+ExcludeAllSessionsFromExecution(WorkerPool *workerPool)
+{
+	DistributedExecution *execution = workerPool->distributedExecution;
+	WorkerSession *session = NULL;
+	foreach_ptr(session, workerPool->sessionList)
+	{
+		ExcludeConnectionFromExecution(execution, session->connection);
+	}
+}
+
+
+/*
+ * ExcludeConnectionFromExecution excludes the input connection from the execution.
+ * In this context we define "exclude" as follows: The underlying pqConnection is
+ * terminated and will not be used anymore for the execution. However, the underlying
+ * MultiConnection is left inact until the end of the execution (e.g., CleanupSessions())
+ * to keep the code simpler.
+ */
+static void
+ExcludeConnectionFromExecution(DistributedExecution *execution,
+							   MultiConnection *connection)
+{
+	/*
+	 * This is unexpected, none of the connections that we exclude
+	 * from the execution should ever successfully connected. Still,
+	 * we prefer errors over asserts.
+	 */
+	if (connection->connectionState == MULTI_CONNECTION_CONNECTED)
+	{
+		ereport(ERROR, (errmsg("cannot exclude connection as it is "
+							   "already connected")));
+	}
+
+	/* remove the connection */
+	UnclaimConnection(connection);
+
+	/*
+	 * We forcefully close the underlying libpq connection because
+	 * we don't want any subsequent execution (either subPlan executions
+	 * or new command executions within a transaction block) use the
+	 * connection.
+	 *
+	 * However, we prefer to keep the MultiConnection around until
+	 * the end of FinishDistributedExecution() to simplify the code.
+	 * Thus, we prefer ShutdownConnection() over CloseConnection().
+	 */
+	ShutdownConnection(connection);
+	connection->connectionState = MULTI_CONNECTION_FAILED;
+
+	/* remove connection from wait event set */
+	execution->rebuildWaitEventSet = true;
+
+	/*
+	 * Reset the transaction state machine since CloseConnection()
+	 * relies on it and even if we're not inside a distributed transaction
+	 * we set the transaction state (e.g., REMOTE_TRANS_SENT_COMMAND).
+	 */
+	if (!connection->remoteTransaction.beginSent)
+	{
+		connection->remoteTransaction.transactionState =
+			REMOTE_TRANS_NOT_STARTED;
+	}
 }
 
 
