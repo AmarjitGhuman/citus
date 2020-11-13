@@ -23,6 +23,7 @@
 #include "access/htup_details.h"
 #include "catalog/pg_authid.h"
 #include "commands/dbcommands.h"
+#include "distributed/backend_data.h"
 #include "distributed/cancel_utils.h"
 #include "distributed/connection_management.h"
 #include "distributed/listutils.h"
@@ -270,6 +271,11 @@ TryToIncrementSharedConnectionCounter(const char *hostname, int port)
 	connKey.port = port;
 	connKey.databaseOid = MyDatabaseId;
 
+	/* TODO: could this be a perf bottleneck? */
+	WorkerNode *workerNode = FindWorkerNode(hostname, port);
+	bool localNode = workerNode->groupId == GetLocalGroupId();
+	int activeBackendCount = GetAllActiveClientBackendCount();
+
 	LockConnectionSharedMemory(LW_EXCLUSIVE);
 
 	/*
@@ -299,6 +305,11 @@ TryToIncrementSharedConnectionCounter(const char *hostname, int port)
 		connectionEntry->connectionCount = 1;
 
 		counterIncremented = true;
+	}
+	else if (localNode && activeBackendCount > MaxConnections * 0.9)
+	{
+		/* there is no space left for this connection */
+		counterIncremented = false;
 	}
 	else if (connectionEntry->connectionCount + 1 > GetMaxSharedPoolSize())
 	{

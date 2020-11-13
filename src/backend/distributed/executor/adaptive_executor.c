@@ -381,6 +381,12 @@ typedef struct WorkerPool
 	uint32 maxNewConnectionsPerCycle;
 
 	/*
+	 * Set to true if the pool is to local node. We use this value to
+	 * avoid re-calculating often.
+	 */
+	bool poolToLocalNode;
+
+	/*
 	 * This is only set in WorkerPoolFailed() function. Once a pool fails, we do not
 	 * use it anymore.
 	 */
@@ -620,7 +626,6 @@ static bool SendNextQuery(TaskPlacementExecution *placementExecution,
 						  WorkerSession *session);
 static void ConnectionStateMachine(WorkerSession *session);
 static bool CouldAssignTasksToLocalExecution(WorkerPool *workerPool);
-static bool WorkerPoolToLocalNode(WorkerPool *workerPool);
 static bool PoolHasSessionWithAssignedTask(WorkerPool *workerPool);
 static void ConvertRemoteTasksToLocalTasks(WorkerPool *workerPool);
 static List * WorkerPoolTaskList(WorkerPool *workerPool);
@@ -1727,8 +1732,6 @@ AssignTasksToConnectionsOrWorkerPool(DistributedExecution *execution)
 	RowModifyLevel modLevel = execution->modLevel;
 	List *taskList = execution->tasksToExecute;
 
-	int32 localGroupId = GetLocalGroupId();
-
 	Task *task = NULL;
 	foreach_ptr(task, taskList)
 	{
@@ -1867,11 +1870,6 @@ AssignTasksToConnectionsOrWorkerPool(DistributedExecution *execution)
 				 * placements.
 				 */
 				placementExecutionReady = false;
-			}
-
-			if (taskPlacement->groupId == localGroupId)
-			{
-				SetLocalExecutionStatus(LOCAL_EXECUTION_DISABLED);
 			}
 		}
 	}
@@ -2038,6 +2036,9 @@ FindOrCreateWorkerPool(DistributedExecution *execution, char *nodeName, int node
 	workerPool = (WorkerPool *) palloc0(sizeof(WorkerPool));
 	workerPool->nodeName = pstrdup(nodeName);
 	workerPool->nodePort = nodePort;
+
+	WorkerNode *workerNode = FindWorkerNode(nodeName, nodePort);
+	workerPool->poolToLocalNode = workerNode->groupId == GetLocalGroupId();
 
 	/* "open" connections aggressively when there are cached connections */
 	int nodeConnectionCount = MaxCachedConnectionsPerWorker;
@@ -2573,6 +2574,7 @@ OpenNewConnections(WorkerPool *workerPool, int newConnectionCount,
 		{
 			/* connection can only be NULL for optional connections */
 			Assert((connectionFlags & OPTIONAL_CONNECTION));
+
 			continue;
 		}
 
@@ -3010,10 +3012,24 @@ ConnectionStateMachine(WorkerSession *session)
 					/* a task has failed due to this connection failure */
 					ReportConnectionError(connection, ERROR);
 				}
+				else if (workerPool->activeConnectionCount == 0)
+				{
+					/*
+					 * Can try establising new connections, still it is worth
+					 * warning the user as we don't have an active connection
+					 * to the given node.
+					 */
+					ReportConnectionError(connection, WARNING);
+				}
 				else
 				{
-					/* can continue with the remaining nodes */
-					ReportConnectionError(connection, WARNING);
+					/*
+					 * Can continue with the existing active connections,
+					 * giving a WARNING doesn't help anyone as the warning
+					 * is mostly likely the remote node is hitting
+					 * max_connections.
+					 */
+					ReportConnectionError(connection, DEBUG1);
 				}
 
 				/* remove the connection */
@@ -3024,6 +3040,12 @@ ConnectionStateMachine(WorkerSession *session)
 				 * the end of the execution.
 				 */
 				ExcludeConnectionFromExecution(execution, connection);
+
+
+				/*
+				 * TODO: there is nothing preventing CONNECTION_FAILED
+				 * to get here back. That could cause weird issues.
+				 */
 
 				break;
 			}
@@ -3068,7 +3090,7 @@ CouldAssignTasksToLocalExecution(WorkerPool *workerPool)
 		return false;
 	}
 
-	if (!WorkerPoolToLocalNode(workerPool))
+	if (!workerPool->poolToLocalNode)
 	{
 		/*
 		 * We can only assign tasks to local execution if the pool
@@ -3091,19 +3113,6 @@ CouldAssignTasksToLocalExecution(WorkerPool *workerPool)
 
 
 /*
- * WorkerPoolToLocalNode returns true if the input pool is targeting
- * the local node.
- */
-static bool
-WorkerPoolToLocalNode(WorkerPool *workerPool)
-{
-	WorkerNode *workerNode = FindWorkerNode(workerPool->nodeName, workerPool->nodePort);
-
-	return workerNode->groupId == GetLocalGroupId();
-}
-
-
-/*
  * PoolHasSessionWithAssignedTask returns true if the input workerPool has any
  * sessions with assigned tasks.
  */
@@ -3114,8 +3123,9 @@ PoolHasSessionWithAssignedTask(WorkerPool *workerPool)
 	foreach_ptr(session, workerPool->sessionList)
 	{
 		TaskPlacementExecution *placementExecution = session->currentTask;
-		Task *task = TaskPlacementExecutionGetTask(placementExecution);
-		if (task != NULL)
+
+		if (placementExecution &&
+			placementExecution->assignedSession != NULL)
 		{
 			return true;
 		}
@@ -3151,11 +3161,11 @@ ConvertRemoteTasksToLocalTasks(WorkerPool *workerPool)
 	 * message is better than asserts.
 	 */
 	List *poolTaskList = WorkerPoolTaskList(workerPool);
-	if (poolTaskList != NIL)
+	if (poolTaskList == NIL)
 	{
 		ereport(ERROR, (errmsg("cannot convert remote execution to "
-							   "local execution because local "
-							   "placement list has already items")));
+							   "local execution because the remote "
+							   "pool doesn't have any items")));
 	}
 
 	/* assign all the tasks of the pool to the local execution */
@@ -3825,6 +3835,11 @@ StartPlacementExecutionOnSession(TaskPlacementExecution *placementExecution,
 	if (querySent)
 	{
 		session->commandsSent++;
+
+		if (taskPlacement->groupId == GetLocalGroupId())
+		{
+			SetLocalExecutionStatus(LOCAL_EXECUTION_DISABLED);
+		}
 	}
 
 	return querySent;
