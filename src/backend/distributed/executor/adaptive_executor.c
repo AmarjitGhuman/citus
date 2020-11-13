@@ -2038,7 +2038,11 @@ FindOrCreateWorkerPool(DistributedExecution *execution, char *nodeName, int node
 	workerPool->nodePort = nodePort;
 
 	WorkerNode *workerNode = FindWorkerNode(nodeName, nodePort);
-	workerPool->poolToLocalNode = workerNode->groupId == GetLocalGroupId();
+	if (workerNode)
+	{
+		workerPool->poolToLocalNode =
+			workerNode->groupId == GetLocalGroupId();
+	}
 
 	/* "open" connections aggressively when there are cached connections */
 	int nodeConnectionCount = MaxCachedConnectionsPerWorker;

@@ -272,9 +272,14 @@ TryToIncrementSharedConnectionCounter(const char *hostname, int port)
 	connKey.databaseOid = MyDatabaseId;
 
 	/* TODO: could this be a perf bottleneck? */
+	bool localNode = false;
+	int activeBackendCount = 0;
 	WorkerNode *workerNode = FindWorkerNode(hostname, port);
-	bool localNode = workerNode->groupId == GetLocalGroupId();
-	int activeBackendCount = GetAllActiveClientBackendCount();
+	if (workerNode)
+	{
+		localNode = workerNode->groupId == GetLocalGroupId();
+		activeBackendCount = GetAllActiveClientBackendCount();
+	}
 
 	LockConnectionSharedMemory(LW_EXCLUSIVE);
 
