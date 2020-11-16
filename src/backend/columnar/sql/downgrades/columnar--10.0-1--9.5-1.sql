@@ -5,7 +5,7 @@ SET search_path TO cstore;
 DO $proc$
 BEGIN
 
-IF version() ~ '12' or version() ~ '13' THEN
+IF substring(current_Setting('server_version'), '\d+')::int >= 12 THEN
   EXECUTE $$
     DROP FUNCTION pg_catalog.alter_cstore_table_reset(
         table_name regclass,

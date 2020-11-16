@@ -1,4 +1,4 @@
-IF version() ~ '12' or version() ~ '13' THEN
+IF substring(current_Setting('server_version'), '\d+')::int >= 12 THEN
 IF NOT EXISTS (SELECT 1 FROM pg_am WHERE amname = 'cstore_tableam') THEN
 
 #include "../cstore_tableam_handler/10.0-1.sql"

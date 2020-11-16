@@ -90,7 +90,10 @@ COMMENT ON VIEW cstore_options IS 'CStore per table settings';
 DO $proc$
 BEGIN
 
-IF version() ~ '12' or version() ~ '13' THEN
+-- from version 12 and up we have support for tableam's if installed on pg11 we can't
+-- create the objects here. Instead we rely on citus_finish_pg_upgrade to be called by the
+-- user instead to add the missing objects
+IF substring(current_Setting('server_version'), '\d+')::int >= 12 THEN
   EXECUTE $$
 #include "udfs/cstore_tableam_handler/10.0-1.sql"
 #include "udfs/alter_cstore_table_set/10.0-1.sql"
