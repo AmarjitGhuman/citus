@@ -6,5 +6,4 @@ AS 'MODULE_PATHNAME', 'cstore_tableam_handler';
 COMMENT ON FUNCTION cstore.cstore_tableam_handler(internal)
     IS 'internal function returning the handler for cstore tables';
 
--- TODO add check to only create if not already existing
 CREATE ACCESS METHOD cstore_tableam TYPE TABLE HANDLER cstore.cstore_tableam_handler;

@@ -1,8 +1,16 @@
+CREATE OR REPLACE FUNCTION citus_internal.cstore_ensure_objects_exist()
+    RETURNS void
+    LANGUAGE plpgsql
+    SET search_path = pg_catalog
+AS $ceoe$
+BEGIN
+
+-- when postgres is version 12 or above we need to create the tableam. If the tableam
+-- exist we assume all objects have been created.
 IF substring(current_Setting('server_version'), '\d+')::int >= 12 THEN
 IF NOT EXISTS (SELECT 1 FROM pg_am WHERE amname = 'cstore_tableam') THEN
 
 #include "../cstore_tableam_handler/10.0-1.sql"
-
 
 #include "../alter_cstore_table_set/10.0-1.sql"
 
@@ -24,3 +32,8 @@ IF NOT EXISTS (SELECT 1 FROM pg_am WHERE amname = 'cstore_tableam') THEN
 
 END IF;
 END IF;
+END;
+$ceoe$;
+
+COMMENT ON FUNCTION citus_internal.cstore_ensure_objects_exist()
+    IS 'internal function to be called by pg_catalog.citus_finish_pg_upgrade responsible for creating the columnar objects';

@@ -108,7 +108,7 @@ BEGIN
         old_records naming,
         pg_get_object_address(naming.type, naming.object_names, naming.object_args) address;
 
-#include "../../../../columnar/sql/udfs/citus_finish_pg_upgrade/10.0-1.sql"
+    PERFORM citus_internal.cstore_ensure_objects_exist();
 END;
 $cppu$;
 

@@ -475,10 +475,11 @@ SELECT * FROM print_extension_changes();
 -- Snapshot of state at 10.0-1
 ALTER EXTENSION citus UPDATE TO '10.0-1';
 SELECT * FROM print_extension_changes();
- previous_object |                  current_object
+ previous_object |                    current_object
 ---------------------------------------------------------------------
                  | event trigger cstore_ddl_event_end
                  | foreign-data wrapper cstore_fdw
+                 | function citus_internal.cstore_ensure_objects_exist()
                  | function cstore.cstore_ddl_event_end_trigger()
                  | function cstore.cstore_fdw_handler()
                  | function cstore.cstore_fdw_validator(text[],oid)
@@ -488,7 +489,7 @@ SELECT * FROM print_extension_changes();
                  | table cstore.cstore_skipnodes
                  | table cstore.cstore_stripes
                  | view cstore.cstore_options
-(11 rows)
+(12 rows)
 
 DROP TABLE prev_objects, extension_diff;
 -- show running version

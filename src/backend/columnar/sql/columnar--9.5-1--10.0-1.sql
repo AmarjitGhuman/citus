@@ -102,4 +102,6 @@ IF substring(current_Setting('server_version'), '\d+')::int >= 12 THEN
 END IF;
 END$proc$;
 
+#include "udfs/cstore_ensure_objects_exist/10.0-1.sql"
+
 RESET search_path;
